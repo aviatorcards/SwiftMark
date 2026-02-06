@@ -1,7 +1,8 @@
 import Foundation
 
 /// Processes shortcodes in markdown content
-public class ShortcodeProcessor {
+public final class ShortcodeProcessor: @unchecked Sendable {
+    private let lock = NSLock()
     private var shortcodes: [String: Shortcode] = [:]
 
     // Cached regex patterns for performance
@@ -41,6 +42,8 @@ public class ShortcodeProcessor {
 
     /// Register a custom shortcode
     public func register(_ shortcode: Shortcode) {
+        lock.lock()
+        defer { lock.unlock() }
         shortcodes[shortcode.name] = shortcode
     }
 
@@ -73,7 +76,11 @@ public class ShortcodeProcessor {
 
                     let params = parseParameters(from: paramsString)
 
-                    if let shortcode = shortcodes[shortcodeName] {
+                    lock.lock()
+                    let shortcode = shortcodes[shortcodeName]
+                    lock.unlock()
+
+                    if let shortcode = shortcode {
                         let rendered = shortcode.render(params: params, content: content)
                         result =
                             (result as NSString).replacingCharacters(
@@ -106,7 +113,11 @@ public class ShortcodeProcessor {
 
                     let params = parseParameters(from: paramsString)
 
-                    if let shortcode = shortcodes[shortcodeName] {
+                    lock.lock()
+                    let shortcode = shortcodes[shortcodeName]
+                    lock.unlock()
+
+                    if let shortcode = shortcode {
                         let rendered = shortcode.render(params: params, content: nil)
                         result =
                             (result as NSString).replacingCharacters(
@@ -139,7 +150,11 @@ public class ShortcodeProcessor {
 
                     let params = parseParameters(from: paramsString)
 
-                    if let shortcode = shortcodes[shortcodeName] {
+                    lock.lock()
+                    let shortcode = shortcodes[shortcodeName]
+                    lock.unlock()
+
+                    if let shortcode = shortcode {
                         let rendered = shortcode.render(params: params, content: nil)
                         result =
                             (result as NSString).replacingCharacters(

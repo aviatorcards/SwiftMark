@@ -1,7 +1,7 @@
 import Foundation
 
 /// Represents a single markdown page with its metadata and content
-public struct Page {
+public struct Page: Sendable {
     /// Relative path/identifier
     public let path: String
 

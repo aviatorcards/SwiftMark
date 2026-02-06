@@ -96,9 +96,9 @@ public class AttributedStringRenderer {
     // MARK: - Public API
 
     /// Render markdown string to attributed string
-    public func render(_ markdown: String) -> NSAttributedString {
+    public func render(_ markdown: String, options: MarkdownOptions = .default) -> NSAttributedString {
         let document = Document(parsing: markdown)
-        var walker = AttributedStringWalker()
+        var walker = AttributedStringWalker(options: options)
         return walker.render(document)
     }
 
@@ -158,8 +158,12 @@ public class AttributedStringRenderer {
 private struct AttributedStringWalker: MarkupWalker {
     private var attributedString = NSMutableAttributedString()
     private var currentAttributes: [NSAttributedString.Key: Any] = [:]
+    private var footnotes: [String: NSAttributedString] = [:]
+    private var footnoteOrder: [String] = []
+    private let options: MarkdownOptions
 
-    init() {
+    init(options: MarkdownOptions = .default) {
+        self.options = options
         // Set base attributes
         currentAttributes[.font] = AttributedStringRenderer.TextStyle.baseFont
         currentAttributes[.foregroundColor] = AttributedStringRenderer.TextStyle.baseColor
@@ -167,7 +171,25 @@ private struct AttributedStringWalker: MarkupWalker {
 
     mutating func render(_ document: Document) -> NSAttributedString {
         attributedString = NSMutableAttributedString()
+        footnotes = [:]
+        footnoteOrder = []
         visit(document)
+        
+        // Append footnotes at the end
+        if !footnoteOrder.isEmpty && options.enableFootnotes {
+            append("\n─────────────────────────────────\n", with: [.foregroundColor: AttributedStringRenderer.TextStyle.secondaryColor])
+            for label in footnoteOrder {
+                if let content = footnotes[label] {
+                    let index = (footnoteOrder.firstIndex(of: label) ?? 0) + 1
+                    var attr: [NSAttributedString.Key: Any] = currentAttributes
+                    attr[.font] = AttributedStringRenderer.TextStyle.monoFont
+                    append("\(index). ", with: attr)
+                    attributedString.append(content)
+                    append("\n", with: currentAttributes)
+                }
+            }
+        }
+        
         return attributedString
     }
 
@@ -241,8 +263,14 @@ private struct AttributedStringWalker: MarkupWalker {
     }
 
     mutating func visitListItem(_ listItem: ListItem) {
-        // Add bullet or number
-        append("  • ", with: currentAttributes)
+        // Check for task list item
+        if let checkbox = listItem.checkbox {
+            let marker = checkbox == .checked ? "  ☑ " : "  ☐ "
+            append(marker, with: currentAttributes)
+        } else {
+            // Regular bullet
+            append("  • ", with: currentAttributes)
+        }
         descendInto(listItem)
         appendNewlines(1)
     }
@@ -361,6 +389,74 @@ private struct AttributedStringWalker: MarkupWalker {
         var attributes = currentAttributes
         attributes[.foregroundColor] = AttributedStringRenderer.TextStyle.secondaryColor
         append("\n─────────────────────────────────\n", with: attributes)
+    }
+
+    mutating func visitHTMLBlock(_ htmlBlock: HTMLBlock) {
+        // For attributed strings, render HTML blocks as plain text (monospaced)
+        var attributes = currentAttributes
+        attributes[.font] = AttributedStringRenderer.TextStyle.monoFont
+        attributes[.foregroundColor] = AttributedStringRenderer.TextStyle.secondaryColor
+        append(htmlBlock.rawHTML, with: attributes)
+        appendNewlines(1)
+    }
+
+    mutating func visitStrikethrough(_ strikethrough: Strikethrough) {
+        let savedAttributes = currentAttributes
+        currentAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        descendInto(strikethrough)
+        currentAttributes = savedAttributes
+    }
+
+    // MARK: - Table Support
+
+    mutating func visitTable(_ table: Table) {
+        appendNewlines(1)
+        descendInto(table)
+        appendNewlines(1)
+    }
+
+    mutating func visitTableHead(_ head: Table.Head) {
+        var headerText = "┃ "
+        for cell in head.cells {
+            headerText += cell.plainText + " ┃ "
+        }
+        var attributes = currentAttributes
+        #if canImport(AppKit)
+            if let font = attributes[.font] as? NSFont {
+                let boldFont = NSFont(
+                    descriptor: font.fontDescriptor.withSymbolicTraits(.bold),
+                    size: font.pointSize) ?? font
+                attributes[.font] = boldFont
+            }
+        #else
+            if let font = attributes[.font] as? UIFont {
+                let boldFont = UIFont(
+                    descriptor: font.fontDescriptor.withSymbolicTraits(.traitBold)
+                        ?? font.fontDescriptor, size: font.pointSize)
+                attributes[.font] = boldFont
+            }
+        #endif
+        append(headerText, with: attributes)
+        appendNewlines(1)
+        // Add separator line
+        var separatorAttributes = currentAttributes
+        separatorAttributes[.foregroundColor] = AttributedStringRenderer.TextStyle.secondaryColor
+        let separatorLine = String(repeating: "─", count: headerText.count)
+        append(separatorLine, with: separatorAttributes)
+        appendNewlines(1)
+    }
+
+    mutating func visitTableBody(_ body: Table.Body) {
+        descendInto(body)
+    }
+
+    mutating func visitTableRow(_ row: Table.Row) {
+        var rowText = "┃ "
+        for cell in row.cells {
+            rowText += cell.plainText + " ┃ "
+        }
+        append(rowText, with: currentAttributes)
+        appendNewlines(1)
     }
 
     // MARK: - Helper Methods

@@ -2,16 +2,32 @@ import Foundation
 import Markdown
 import Yams
 
-/// Processes markdown files into Page objects
-public class MarkdownProcessor {
-    private let shortcodeProcessor = ShortcodeProcessor()
+/// Errors that can occur during markdown processing
+public enum SwiftMarkError: Error, Sendable {
+    case fileReadError(URL, underlying: Error)
+    case invalidFrontMatter(String)
+    case shortcodeError(name: String, message: String)
+    case processingError(String)
+}
 
-    public init() {}
+/// Processes markdown files into Page objects
+public final class MarkdownProcessor: Sendable {
+    private let shortcodeProcessor = ShortcodeProcessor()
+    private let options: MarkdownOptions
+
+    public init(options: MarkdownOptions = .default) {
+        self.options = options
+    }
 
     /// Process a markdown file into a Page
     public func process(file: URL, relativeTo baseURL: URL) throws -> Page {
         // Read file content
-        let fileContent = try String(contentsOf: file, encoding: .utf8)
+        let fileContent: String
+        do {
+            fileContent = try String(contentsOf: file, encoding: .utf8)
+        } catch {
+            throw SwiftMarkError.fileReadError(file, underlying: error)
+        }
 
         // Process content
         let (frontMatter, processedHTML) = process(content: fileContent)
@@ -23,11 +39,22 @@ public class MarkdownProcessor {
         )
 
         // Get file metadata
-        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        } catch {
+            throw SwiftMarkError.fileReadError(file, underlying: error)
+        }
+        
         let modifiedDate = attributes[.modificationDate] as? Date ?? Date()
 
-        // Re-extract raw markdown for the Page object (slightly inefficient but correct)
-        let (_, markdown) = try extractFrontMatter(from: fileContent)
+        // Re-extract raw markdown for the Page object
+        let (_, markdown): (FrontMatter?, String)
+        do {
+            (_, markdown) = try extractFrontMatter(from: fileContent)
+        } catch {
+            throw SwiftMarkError.invalidFrontMatter(error.localizedDescription)
+        }
 
         return Page(
             path: relativePath,
@@ -44,11 +71,13 @@ public class MarkdownProcessor {
         // Extract frontmatter if present
         let (frontMatter, markdown) = (try? extractFrontMatter(from: content)) ?? (nil, content)
 
-        // Parse markdown to HTML first
+        // Parse markdown to HTML
         let htmlContent = renderHTML(from: markdown)
 
-        // Process shortcodes in the HTML (after markdown rendering)
-        let processedHTML = shortcodeProcessor.process(htmlContent)
+        // Process shortcodes in the HTML (after markdown rendering) if enabled
+        let processedHTML = options.enableShortcodes
+            ? shortcodeProcessor.process(htmlContent)
+            : htmlContent
 
         return (frontMatter, processedHTML)
     }
@@ -63,9 +92,34 @@ public class MarkdownProcessor {
 
         // Render to attributed string
         let renderer = AttributedStringRenderer()
-        let attributedString = renderer.render(markdown)
+        let attributedString = renderer.render(markdown, options: options)
 
         return (frontMatter, attributedString)
+    }
+
+    /// Parse raw markdown content string to AST
+    /// Returns the parsed frontmatter and Document AST
+    public func parse(_ content: String) -> (frontMatter: FrontMatter?, document: Document) {
+        let (frontMatter, markdown) = (try? extractFrontMatter(from: content)) ?? (nil, content)
+        let document = Document(parsing: markdown)
+        return (frontMatter, document)
+    }
+
+    /// Process multiple markdown files into Page objects asynchronously
+    public func process(files: [URL], relativeTo baseURL: URL) async throws -> [Page] {
+        return try await withThrowingTaskGroup(of: Page.self) { group in
+            for file in files {
+                group.addTask {
+                    try self.process(file: file, relativeTo: baseURL)
+                }
+            }
+
+            var pages: [Page] = []
+            for try await page in group {
+                pages.append(page)
+            }
+            return pages
+        }
     }
 
     /// Extract YAML frontmatter from markdown content
@@ -100,7 +154,11 @@ public class MarkdownProcessor {
     /// Render markdown to HTML using swift-markdown
     private func renderHTML(from markdown: String) -> String {
         let document = Document(parsing: markdown)
-        var renderer = MarkdownHTMLRenderer()
+        var renderer = MarkdownHTMLRenderer(
+            strictMode: options.strictMode,
+            syntaxHighlighting: options.syntaxHighlighting,
+            enableFootnotes: options.enableFootnotes
+        )
         return renderer.render(document)
     }
 }
@@ -108,11 +166,39 @@ public class MarkdownProcessor {
 /// HTML renderer for markdown documents
 private struct MarkdownHTMLRenderer: MarkupWalker {
     private var html = ""
+    private var footnotes: [String: String] = [:]
+    private var footnoteOrder: [String] = []
     private let highlighter = SyntaxHighlighter()
+    private let strictMode: Bool
+    private let syntaxHighlighting: Bool
+    private let enableFootnotes: Bool
+
+    init(strictMode: Bool = false, syntaxHighlighting: Bool = true, enableFootnotes: Bool = true) {
+        self.strictMode = strictMode
+        self.syntaxHighlighting = syntaxHighlighting
+        self.enableFootnotes = enableFootnotes
+    }
 
     mutating func render(_ document: Document) -> String {
         html = ""
+        footnotes = [:]
+        footnoteOrder = []
         visit(document)
+        
+        // Append footnotes at the end if any were found
+        if !footnoteOrder.isEmpty && enableFootnotes {
+            html += "\n<div class=\"footnotes\">\n<hr />\n<ol>\n"
+            for label in footnoteOrder {
+                if let content = footnotes[label] {
+                    html += "<li id=\"fn:\(label.htmlEscaped)\">"
+                    html += content
+                    html += " <a href=\"#fnref:\(label.htmlEscaped)\" class=\"footnote-backref\">↩</a>"
+                    html += "</li>\n"
+                }
+            }
+            html += "</ol>\n</div>\n"
+        }
+        
         return html
     }
 
@@ -149,10 +235,15 @@ private struct MarkdownHTMLRenderer: MarkupWalker {
         let language = codeBlock.language ?? ""
         let code = codeBlock.code
 
-        if !language.isEmpty {
+        if !language.isEmpty && syntaxHighlighting {
             // Use syntax highlighter for known languages
             html += highlighter.highlight(code: code, language: language)
             html += "\n"
+        } else if !language.isEmpty {
+            // Language specified but highlighting disabled
+            html += "<pre><code class=\"language-\(language.htmlEscaped)\">"
+            html += code.htmlEscaped
+            html += "</code></pre>\n"
         } else {
             // No language specified, render as plain code
             html += "<pre><code>"
@@ -185,9 +276,17 @@ private struct MarkdownHTMLRenderer: MarkupWalker {
     }
 
     mutating func visitListItem(_ listItem: ListItem) {
-        html += "<li>"
-        descendInto(listItem)
-        html += "</li>\n"
+        // In strict mode, ignore task list checkboxes (not CommonMark)
+        if !strictMode, let checkbox = listItem.checkbox {
+            let checked = checkbox == .checked ? " checked disabled" : " disabled"
+            html += "<li><input type=\"checkbox\"\(checked) /> "
+            descendInto(listItem)
+            html += "</li>\n"
+        } else {
+            html += "<li>"
+            descendInto(listItem)
+            html += "</li>\n"
+        }
     }
 
     mutating func visitBlockQuote(_ blockQuote: BlockQuote) {
@@ -213,5 +312,114 @@ private struct MarkdownHTMLRenderer: MarkupWalker {
 
     mutating func visitThematicBreak(_ thematicBreak: ThematicBreak) {
         html += "<hr />\n"
+    }
+
+    mutating func visitHTMLBlock(_ htmlBlock: HTMLBlock) {
+        // Pass through raw HTML blocks as-is (user-provided HTML)
+        html += htmlBlock.rawHTML
+        html += "\n"
+    }
+
+    mutating func visitStrikethrough(_ strikethrough: Strikethrough) {
+        // In strict mode, strikethrough is not CommonMark - render as plain text
+        if strictMode {
+            descendInto(strikethrough)
+        } else {
+            html += "<del>"
+            descendInto(strikethrough)
+            html += "</del>"
+        }
+    }
+
+    // MARK: - Table Support
+
+    mutating func visitTable(_ table: Table) {
+        // In strict mode, tables are not CommonMark - render as plain text
+        if strictMode {
+            descendInto(table)
+            html += "\n"
+        } else {
+            html += "<table>\n"
+            descendInto(table)
+            html += "</table>\n"
+        }
+    }
+
+    mutating func visitTableHead(_ head: Table.Head) {
+        if strictMode {
+            // In strict mode, render cells as plain text separated by pipes
+            for cell in head.cells {
+                for child in cell.children {
+                    visit(child)
+                }
+                html += " | "
+            }
+            html += "\n"
+        } else {
+            html += "<thead>\n<tr>\n"
+            let table = head.parent as? Table
+            for (columnIndex, cell) in head.cells.enumerated() {
+                let alignment = alignmentStyle(for: columnIndex, in: table)
+                html += "<th\(alignment)>"
+                for child in cell.children {
+                    visit(child)
+                }
+                html += "</th>\n"
+            }
+            html += "</tr>\n</thead>\n"
+        }
+    }
+
+    mutating func visitTableBody(_ body: Table.Body) {
+        if strictMode {
+            descendInto(body)
+        } else {
+            html += "<tbody>\n"
+            descendInto(body)
+            html += "</tbody>\n"
+        }
+    }
+
+    mutating func visitTableRow(_ row: Table.Row) {
+        if strictMode {
+            // In strict mode, render cells as plain text separated by pipes
+            for cell in row.cells {
+                for child in cell.children {
+                    visit(child)
+                }
+                html += " | "
+            }
+            html += "\n"
+        } else {
+            html += "<tr>\n"
+            let table = row.parent?.parent as? Table
+            for (columnIndex, cell) in row.cells.enumerated() {
+                let alignment = alignmentStyle(for: columnIndex, in: table)
+                html += "<td\(alignment)>"
+                for child in cell.children {
+                    visit(child)
+                }
+                html += "</td>\n"
+            }
+            html += "</tr>\n"
+        }
+    }
+
+    private func alignmentStyle(for columnIndex: Int, in table: Table?) -> String {
+        guard let table = table,
+              columnIndex < table.columnAlignments.count else {
+            return ""
+        }
+        let alignment = table.columnAlignments[columnIndex]
+        switch alignment {
+        case .left:
+            return " style=\"text-align: left;\""
+        case .center:
+            return " style=\"text-align: center;\""
+        case .right:
+            return " style=\"text-align: right;\""
+        case nil:
+            return ""
+        }
     }
 }

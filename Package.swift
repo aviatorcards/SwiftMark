@@ -11,6 +11,10 @@ let package = Package(
         .library(
             name: "SwiftMark",
             targets: ["SwiftMark"]
+        ),
+        .executable(
+            name: "swiftmark-cli",
+            targets: ["SwiftMarkCLI"]
         )
     ],
     dependencies: [
@@ -18,6 +22,7 @@ let package = Package(
         .package(url: "https://github.com/jpsim/Yams.git", from: "5.0.0"),
         .package(url: "https://github.com/JohnSundell/Splash.git", from: "0.16.0"),
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     ],
     targets: [
         .target(
@@ -26,6 +31,13 @@ let package = Package(
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Splash", package: "Splash"),
+            ]
+        ),
+        .executableTarget(
+            name: "SwiftMarkCLI",
+            dependencies: [
+                "SwiftMark",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .testTarget(

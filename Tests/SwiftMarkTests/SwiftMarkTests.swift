@@ -232,3 +232,162 @@ struct HTMLEscapingTests {
         #expect(escaped.contains("&gt;"))
     }
 }
+
+// MARK: - GFM Extensions Tests
+
+@Suite("Table Rendering Tests")
+struct TableTests {
+    let processor = MarkdownProcessor()
+
+    @Test("Renders basic table")
+    func basicTable() {
+        let markdown = """
+        | Header 1 | Header 2 |
+        |----------|----------|
+        | Cell 1   | Cell 2   |
+        | Cell 3   | Cell 4   |
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(html.contains("<table>"))
+        #expect(html.contains("<thead>"))
+        #expect(html.contains("<tbody>"))
+        #expect(html.contains("<th>"))
+        #expect(html.contains("<td>"))
+        #expect(html.contains("Header 1"))
+        #expect(html.contains("Cell 1"))
+    }
+
+    @Test("Renders table with alignment")
+    func tableWithAlignment() {
+        let markdown = """
+        | Left | Center | Right |
+        |:-----|:------:|------:|
+        | A    | B      | C     |
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(html.contains("text-align: left"))
+        #expect(html.contains("text-align: center"))
+        #expect(html.contains("text-align: right"))
+    }
+}
+
+@Suite("Strikethrough Tests")
+struct StrikethroughTests {
+    let processor = MarkdownProcessor()
+
+    @Test("Renders strikethrough text")
+    func strikethroughText() {
+        let (_, html) = processor.process(content: "This is ~~deleted~~ text.")
+        #expect(html.contains("<del>deleted</del>"))
+    }
+}
+
+@Suite("Task List Tests")
+struct TaskListTests {
+    let processor = MarkdownProcessor()
+
+    @Test("Renders unchecked task item")
+    func uncheckedTask() {
+        let markdown = """
+        - [ ] Unchecked item
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(html.contains("<input type=\"checkbox\" disabled"))
+        #expect(!html.contains("checked disabled"))  // Should NOT have "checked" before "disabled"
+    }
+
+    @Test("Renders checked task item")
+    func checkedTask() {
+        let markdown = """
+        - [x] Checked item
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(html.contains("<input type=\"checkbox\" checked disabled"))
+    }
+
+    @Test("Renders mixed task list")
+    func mixedTaskList() {
+        let markdown = """
+        - [x] Done
+        - [ ] Todo
+        - Regular item
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(html.contains("checked disabled"))
+        #expect(html.contains("<li>"))
+    }
+}
+
+// MARK: - MarkdownOptions Tests
+
+@Suite("MarkdownOptions Tests")
+struct MarkdownOptionsTests {
+    @Test("Default options enable all features")
+    func defaultOptions() {
+        let options = MarkdownOptions.default
+        #expect(options.strictMode == false)
+        #expect(options.enableShortcodes == true)
+        #expect(options.syntaxHighlighting == true)
+    }
+
+    @Test("Strict options disable GFM features")
+    func strictOptions() {
+        let options = MarkdownOptions.strict
+        #expect(options.strictMode == true)
+        #expect(options.enableShortcodes == false)
+    }
+
+    @Test("Strict mode disables strikethrough rendering")
+    func strictModeStrikethrough() {
+        let processor = MarkdownProcessor(options: .strict)
+        let (_, html) = processor.process(content: "This is ~~deleted~~ text.")
+        #expect(!html.contains("<del>"))
+        #expect(html.contains("deleted"))
+    }
+
+    @Test("Strict mode disables task list checkboxes")
+    func strictModeTaskList() {
+        let processor = MarkdownProcessor(options: .strict)
+        let markdown = """
+        - [x] Item
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(!html.contains("<input"))
+        #expect(html.contains("<li>"))
+    }
+
+    @Test("Strict mode renders tables as plain text")
+    func strictModeTables() {
+        let processor = MarkdownProcessor(options: .strict)
+        let markdown = """
+        | A | B |
+        |---|---|
+        | 1 | 2 |
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(!html.contains("<table>"))
+    }
+
+    @Test("Disabling shortcodes leaves them unprocessed")
+    func disableShortcodes() {
+        let options = MarkdownOptions(enableShortcodes: false)
+        let processor = MarkdownProcessor(options: options)
+        let (_, html) = processor.process(content: "{{< youtube id=\"abc\" >}}")
+        #expect(!html.contains("iframe"))
+        #expect(html.contains("youtube"))
+    }
+
+    @Test("Disabling syntax highlighting uses plain code blocks")
+    func disableSyntaxHighlighting() {
+        let options = MarkdownOptions(syntaxHighlighting: false)
+        let processor = MarkdownProcessor(options: options)
+        let markdown = """
+        ```swift
+        let x = 1
+        ```
+        """
+        let (_, html) = processor.process(content: markdown)
+        #expect(html.contains("language-swift"))
+        #expect(!html.contains("<span style="))
+    }
+}
