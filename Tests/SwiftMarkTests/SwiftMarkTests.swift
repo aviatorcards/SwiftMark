@@ -1,4 +1,5 @@
 import Testing
+import Markdown
 @testable import SwiftMark
 
 @Suite("MarkdownProcessor Tests")
@@ -389,5 +390,29 @@ struct MarkdownOptionsTests {
         let (_, html) = processor.process(content: markdown)
         #expect(html.contains("language-swift"))
         #expect(!html.contains("<span style="))
+    }
+}
+
+@Suite("MarkdownTransformer Tests")
+struct MarkdownTransformerTests {
+    // A simple transformer that converts all text to uppercase
+    struct UppercaseTransformer: MarkdownTransformer {
+        func transform(_ document: Document) -> Document {
+            var visitor = UppercaseVisitor()
+            return visitor.visit(document) as! Document
+        }
+    }
+
+    struct UppercaseVisitor: MarkupRewriter {
+        func visitText(_ text: Text) -> (any Markup)? {
+            return Text(text.string.uppercased())
+        }
+    }
+
+    @Test("Applies transformers to the document")
+    func applyTransformer() {
+        let processor = MarkdownProcessor(transformers: [UppercaseTransformer()])
+        let (_, html) = processor.process(content: "Hello world")
+        #expect(html.contains("HELLO WORLD"))
     }
 }

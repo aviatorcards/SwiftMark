@@ -98,6 +98,11 @@ public class AttributedStringRenderer {
     /// Render markdown string to attributed string
     public func render(_ markdown: String, options: MarkdownOptions = .default) -> NSAttributedString {
         let document = Document(parsing: markdown)
+        return render(document, options: options)
+    }
+
+    /// Render markdown document to attributed string
+    public func render(_ document: Document, options: MarkdownOptions = .default) -> NSAttributedString {
         var walker = AttributedStringWalker(options: options)
         return walker.render(document)
     }

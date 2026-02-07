@@ -10,13 +10,20 @@ public enum SwiftMarkError: Error, Sendable {
     case processingError(String)
 }
 
+/// A protocol for transforming the markdown AST before rendering
+public protocol MarkdownTransformer: Sendable {
+    func transform(_ document: Document) -> Document
+}
+
 /// Processes markdown files into Page objects
 public final class MarkdownProcessor: Sendable {
     private let shortcodeProcessor = ShortcodeProcessor()
     private let options: MarkdownOptions
+    private let transformers: [any MarkdownTransformer]
 
-    public init(options: MarkdownOptions = .default) {
+    public init(options: MarkdownOptions = .default, transformers: [any MarkdownTransformer] = []) {
         self.options = options
+        self.transformers = transformers
     }
 
     /// Process a markdown file into a Page
@@ -91,8 +98,9 @@ public final class MarkdownProcessor: Sendable {
         let (frontMatter, markdown) = (try? extractFrontMatter(from: content)) ?? (nil, content)
 
         // Render to attributed string
+        let document = applyTransformers(to: Document(parsing: markdown))
         let renderer = AttributedStringRenderer()
-        let attributedString = renderer.render(markdown, options: options)
+        let attributedString = renderer.render(document, options: options)
 
         return (frontMatter, attributedString)
     }
@@ -101,8 +109,17 @@ public final class MarkdownProcessor: Sendable {
     /// Returns the parsed frontmatter and Document AST
     public func parse(_ content: String) -> (frontMatter: FrontMatter?, document: Document) {
         let (frontMatter, markdown) = (try? extractFrontMatter(from: content)) ?? (nil, content)
-        let document = Document(parsing: markdown)
+        let document = applyTransformers(to: Document(parsing: markdown))
         return (frontMatter, document)
+    }
+
+    /// Apply all registered transformers to the document
+    private func applyTransformers(to document: Document) -> Document {
+        var result = document
+        for transformer in transformers {
+            result = transformer.transform(result)
+        }
+        return result
     }
 
     /// Process multiple markdown files into Page objects asynchronously
@@ -124,36 +141,46 @@ public final class MarkdownProcessor: Sendable {
 
     /// Extract YAML frontmatter from markdown content
     private func extractFrontMatter(from content: String) throws -> (FrontMatter?, String) {
-        // Check for YAML frontmatter delimited by ---
-        let lines = content.components(separatedBy: .newlines)
-
-        guard lines.first == "---" else {
+        // Check if content starts with ---
+        guard content.hasPrefix("---\n") || content.hasPrefix("---\r\n") else {
             return (nil, content)
         }
 
         // Find closing ---
-        guard let endIndex = lines.dropFirst().firstIndex(of: "---") else {
+        let scanner = Scanner(string: content)
+        // Skip the first ---
+        _ = scanner.scanString("---")
+        
+        // Find next --- after some newline
+        guard let _ = scanner.scanUpToString("\n---"),
+              let nextDashRange = content.range(of: "\n---", options: [], range: scanner.currentIndex..<content.endIndex) else {
             return (nil, content)
         }
 
-        // Extract YAML content
-        let yamlLines = lines[1..<endIndex]
-        let yamlString = yamlLines.joined(separator: "\n")
+        let yamlRange = content.index(content.startIndex, offsetBy: 4)..<nextDashRange.lowerBound
+        let yamlString = String(content[yamlRange])
+        
+        // Find start of markdown content (after --- and following newline)
+        var contentStart = nextDashRange.upperBound
+        if contentStart < content.endIndex && content[contentStart] == "\r" {
+            contentStart = content.index(after: contentStart)
+        }
+        if contentStart < content.endIndex && content[contentStart] == "\n" {
+            contentStart = content.index(after: contentStart)
+        }
+        
+        let markdown = String(content[contentStart...])
 
         // Parse YAML
         let decoder = YAMLDecoder()
         let frontMatter = try? decoder.decode(FrontMatter.self, from: yamlString)
-
-        // Get remaining markdown content
-        let markdownLines = lines[(endIndex + 1)...]
-        let markdown = markdownLines.joined(separator: "\n")
 
         return (frontMatter, markdown)
     }
 
     /// Render markdown to HTML using swift-markdown
     private func renderHTML(from markdown: String) -> String {
-        let document = Document(parsing: markdown)
+        let document = applyTransformers(to: Document(parsing: markdown))
         var renderer = MarkdownHTMLRenderer(
             strictMode: options.strictMode,
             syntaxHighlighting: options.syntaxHighlighting,

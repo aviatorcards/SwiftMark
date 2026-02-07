@@ -31,7 +31,7 @@ let package = Package(
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Splash", package: "Splash"),
-            ]
+            ], path: "Sources/Swiftmark"
         ),
         .executableTarget(
             name: "SwiftMarkCLI",
@@ -49,3 +49,4 @@ let package = Package(
         )
     ]
 )
+
